@@ -1,0 +1,1 @@
+# tashi-depin-worker
