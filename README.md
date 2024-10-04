@@ -60,6 +60,14 @@ Check this page periodically for updated recommendations.
 
 ## Setup
 
+### Get the Binary
+
+`tashi-depin-worker` is available as a binary and a container image for x86-64 Linux.
+
+Binary releases are available on the [Releases page](https://github.com/tashigg/tashi-depin-worker/releases).
+
+Container images are available in the [GitHub Container Registry](https://github.com/orgs/tashigg/packages/container/package/tashi-depin-worker).
+
 ### Prepare a License Token
 
 For initial testing, Tashi DePIN uses the following [ERC-721]/[ERC-4907] contract on Sepolia testnet:  
