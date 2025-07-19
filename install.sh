@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-IMAGE_TAG='ghcr.io/tashigg/tashi-depin-worker:0'
+IMAGE_TAG='sha256:08aa79d4b7c3cf65e89e5049a482d54797bf4f53355405d73a9889674c26a3a7'
 TROUBLESHOOT_LINK='https://docs.tashi.gg/resources/depin/worker-node-install-docker#troubleshooting'
 NEXT_STEP_LINK='http://localhost:9000/'
 COMMAND_CENTER_URL='https://depin.tashi.dev/'
@@ -334,13 +334,14 @@ make_install_cmd() {
 	local sudo="${1-$SUDO_CMD}"
 	local cmd="${2-"run"}"
 	local name="${3-$CONTAINER_NAME}"
-	local volumes_from="${4+"--volumes-from $3"}"
+	local volumes_from="${4+"--volumes-from=$4"}"
 	local auto_update_infix=$([[ $AUTO_UPDATE == "y" ]] && echo "--unstable-update-download-path /tmp/tashi-depin-worker")
 
 	cat <<-EOF
 		${sudo:+"$sudo "}${CONTAINER_RT} $cmd -it -p "$AGENT_PORT:$AGENT_PORT" -p 127.0.0.1:9000:9000 \\
-		    --name "$name" -e RUST_LOG="$RUST_LOG" \\
-		    --pull=always $IMAGE_TAG \\
+				--mount type=volume,src=tashi-depin-worker-auth,dst=/home/worker/auth \\
+		    --name "$name" -e RUST_LOG="$RUST_LOG" $volumes_from \\
+		    $IMAGE_TAG \\
 				/home/worker/auth \\
 				$auto_update_infix \\
 		    ${PUBLIC_IP:+"--agent-public-addr=$PUBLIC_IP:$AGENT_PORT"}
@@ -352,63 +353,73 @@ install() {
 
 	local run_cmd=$(make_install_cmd)
 
-	if [[ ! $(sh -c "set -ex; $run_cmd") ]]; then
-		log "ERROR" "Worker failed to start: ${CROSSMARK} Please see the following page for troubleshooting instructions: ${TROUBLESHOOT_LINK}."
+	sh -c "set -ex; $run_cmd"
+
+	if [[ $? -ne 0 ]]; then
+		log "ERROR" "Setup failed to start: ${CROSSMARK} Please see the following page for troubleshooting instructions: ${TROUBLESHOOT_LINK}."
 		exit 1
 	fi
 
 	if [[ "$CONTAINER_RT" = "docker" ]]; then
-		"$SUDO_CMD" docker container update "$CONTAINER_NAME" --restart=always
+		${SUDO_CMD+"$SUDO_CMD "}docker container update "$CONTAINER_NAME" --restart=always
 	fi
 
-	"$SUDO_CMD" "$CONTAINER_RT" start "$CONTAINER_NAME"
+	${SUDO_CMD+"$SUDO_CMD "}"$CONTAINER_RT" start "$CONTAINER_NAME"
+
+	if [[ $? -ne 0 ]]; then
+		log "ERROR" "Worker failed to start: ${CROSSMARK} Please see the following page for troubleshooting instructions: ${TROUBLESHOOT_LINK}."
+	fi
 
 	log "INFO" "Worker is running: ${CHECKMARK}"
 }
 
 update() {
-	# intentionally don't prompt for auto-updates (the user presumably doesn't care)
 	local container_old="$CONTAINER_NAME"
 	local container_new="$CONTAINER_NAME-new"
+
+	# Prompt the user in case they want to enable updates now.
+	prompt_auto_updates
+
 	local create_cmd=$(make_install_cmd "" "create" "$container_new" "$container_old")
 
-	local cmd=$(
-		cat <<-EOF
-			set -ex
-			if [[ ! \$($CONTAINER_RT inspect "$CONTAINER_NAME-old" >/dev/null 2>&1) ]]; then
-			    echo "$CONTAINER_NAME-old already exists (presumably from a failed run), please delete it before continuing" 1>&2
-			    exit 1
-			fi
+	# Execute this whole next block as `sudo` if necessary.
+	# Piping means the sub-process reads line by line and can tell us right where it failed.
+	# Note: when referring to local shell variables *in* the script, be sure to escape: \$foo
+	${SUDO_CMD+"$SUDO_CMD "}bash <<-EOF
+		set -x
 
-			if [[ ! \$($CONTAINER_RT inspect "$container_new" >/dev/null 2>&1) ]]; then
-			    echo "$container_new already exists (presumably from a failed run), please delete it before continuing" 1>&2
-			    exit 1
-			fi
+		($CONTAINER_RT inspect "$CONTAINER_NAME-old" >/dev/null 2>&1)
 
-			$create_cmd
-			$CONTAINER_RT stop $container_old
-			$CONTAINER_RT start $container_new
-			$CONTAINER_RT rename $container_old $CONTAINER_NAME-old
-			$CONTAINER_RT rename $container_new $CONTAINER_NAME
-
-			read -r -p "would you like to delete $CONTAINER_NAME-old (y/N)" choice </dev/tty
-
-			if [[ "\$choice" =~ ^(Y|y)$ ]]
-			    $CONTAINER_RT rm $CONTAINER_NAME-old
-			fi
-		EOF
-	)
-
-	if [[ -n "$SUDO_CMD" ]]; then
-		if [[ ! $("$SUDO_CMD" bash "$cmd") ]]; then
-			log "ERROR" "Worker failed to upgrade: ${CROSSMARK} Please see the following page for troubleshooting instructions: ${TROUBLESHOOT_LINK}."
-			exit 1
+		if [ \$? -eq 0 ]; then
+				echo "$CONTAINER_NAME-old already exists (presumably from a failed run), please delete it before continuing" 1>&2
+				exit 1
 		fi
-	else
-		if [[ ! $(bash "$cmd") ]]; then
-			log "ERROR" "Worker failed to upgrade: ${CROSSMARK} Please see the following page for troubleshooting instructions: ${TROUBLESHOOT_LINK}."
-			exit 1
+
+		($CONTAINER_RT inspect "$container_new" >/dev/null 2>&1)
+
+		if [ \$? -eq 0 ]; then
+				echo "$container_new already exists (presumably from a failed run), please delete it before continuing" 1>&2
+				exit 1
 		fi
+
+		set -ex
+
+		$create_cmd
+		$CONTAINER_RT stop $container_old
+		$CONTAINER_RT start $container_new
+		$CONTAINER_RT rename $container_old $CONTAINER_NAME-old
+		$CONTAINER_RT rename $container_new $CONTAINER_NAME
+
+		read -r -p "would you like to delete $CONTAINER_NAME-old (y/N)" choice </dev/tty
+
+		if [[ "\$choice" =~ "^(Y|y)$" ]]; then
+				$CONTAINER_RT rm $CONTAINER_NAME-old
+		fi
+	EOF
+
+	if [[ $? -ne 0 ]]; then
+		log "ERROR" "Worker failed to upgrade: ${CROSSMARK} Please see the following page for troubleshooting instructions: ${TROUBLESHOOT_LINK}."
+		exit 1
 	fi
 }
 
