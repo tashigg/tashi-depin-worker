@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-IMAGE_TAG='sha256:08aa79d4b7c3cf65e89e5049a482d54797bf4f53355405d73a9889674c26a3a7'
+IMAGE_TAG='ghcr.io/tashigg/tashi-depin-worker:0'
 TROUBLESHOOT_LINK='https://docs.tashi.gg/resources/depin/worker-node-install-docker#troubleshooting'
 NEXT_STEP_LINK='http://localhost:9000/'
 COMMAND_CENTER_URL='https://depin.tashi.dev/'
