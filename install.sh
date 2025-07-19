@@ -327,29 +327,22 @@ prompt_auto_updates() {
 }
 
 CONTAINER_NAME=tashi-depin-worker
+VOLUME_NAME=tashi-depin-worker-auth
+VOLUME_MOUNT_PATH="/home/worker/auth"
 
 make_install_cmd() {
-	local cmd="$1"
-	local sudo="${2-$SUDO_CMD}"
+	local sudo="${1-$SUDO_CMD}"
+	local cmd="${2-"run"}"
 	local name="${3-$CONTAINER_NAME}"
-	local auto_update_infix=$(
-		cat <<-EOF
-			--entrypoint /home/worker/tashi-depin-worker-daemon.sh \\
-			/home/worker/tashi-depin-worker \\
-			/tmp/tashi-depin-worker
-		EOF
-	)
+	local volumes_from="${4+"--volumes-from $3"}"
+	local auto_update_infix=$([[ $AUTO_UPDATE == "y" ]] && echo "--unstable-update-download-path /tmp/tashi-depin-worker")
 
 	cat <<-EOF
-		${sudo:+"$sudo "}${CONTAINER_RT} $cmd -d -p "$AGENT_PORT:$AGENT_PORT" -p 127.0.0.1:9000:9000 \\
+		${sudo:+"$sudo "}${CONTAINER_RT} $cmd -it -p "$AGENT_PORT:$AGENT_PORT" -p 127.0.0.1:9000:9000 \\
 		    --name "$name" -e RUST_LOG="$RUST_LOG" \\
-		    $([[ $CONTAINER_RT == "docker" ]] && echo "--restart=always") \\
 		    --pull=always $IMAGE_TAG \\
-			$([[ $AUTO_UPDATE == "y" ]] && echo "$auto_update_infix") \\
-		    --license-authorized-account-key-path=./license-key \\
-		    --generate-license-authorized-account-key \\
-		    --token-id-save-path=./token-id \\
-		    --command-center-url "$COMMAND_CENTER_URL" \\
+				/home/worker/auth \\
+				$auto_update_infix \\
 		    ${PUBLIC_IP:+"--agent-public-addr=$PUBLIC_IP:$AGENT_PORT"}
 	EOF
 }
@@ -357,37 +350,27 @@ make_install_cmd() {
 install() {
 	prompt_auto_updates
 
-	local run_cmd=$(make_install_cmd "run")
+	local run_cmd=$(make_install_cmd)
 
 	if [[ ! $(sh -c "set -ex; $run_cmd") ]]; then
 		log "ERROR" "Worker failed to start: ${CROSSMARK} Please see the following page for troubleshooting instructions: ${TROUBLESHOOT_LINK}."
 		exit 1
 	fi
 
-	log "INFO" "Worker is running: ${CHECKMARK} Next step is to assign the worker a license token."
-
-	OPEN_COMMAND=$(command -v xdg-open || command -v open || echo "")
-
-	if [[ -n "$OPEN_COMMAND" && -t 2 ]]; then
-		read -r -p "Open the following page in your browser? <${NEXT_STEP_LINK}> (Y/n) " choice </dev/tty
-		case "$choice" in
-			n | N) ;;
-			*)
-				$OPEN_COMMAND "${NEXT_STEP_LINK}"
-				log "INFO" "See the web page in your browser for the next step."
-				exit 0
-				;;
-		esac
+	if [[ "$CONTAINER_RT" = "docker" ]]; then
+		"$SUDO_CMD" docker container update "$CONTAINER_NAME" --restart=always
 	fi
 
-	log "INFO" "Please navigate to <${NEXT_STEP_LINK}> in your browser to continue."
+	"$SUDO_CMD" "$CONTAINER_RT" start "$CONTAINER_NAME"
+
+	log "INFO" "Worker is running: ${CHECKMARK}"
 }
 
 update() {
 	# intentionally don't prompt for auto-updates (the user presumably doesn't care)
 	local container_old="$CONTAINER_NAME"
 	local container_new="$CONTAINER_NAME-new"
-	local create_cmd=$(make_install_cmd "create" "" "$container_new")
+	local create_cmd=$(make_install_cmd "" "create" "$container_new" "$container_old")
 
 	local cmd=$(
 		cat <<-EOF
@@ -403,7 +386,6 @@ update() {
 			fi
 
 			$create_cmd
-			$CONTAINER_RT cp $container_old/home/worker/token-id $container_old/home/worker/license-key $container_new/home/worker/
 			$CONTAINER_RT stop $container_old
 			$CONTAINER_RT start $container_new
 			$CONTAINER_RT rename $container_old $CONTAINER_NAME-old
