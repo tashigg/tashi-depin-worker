@@ -341,7 +341,7 @@ make_install_cmd() {
 		${sudo:+"$sudo "}${CONTAINER_RT} $cmd -it -p "$AGENT_PORT:$AGENT_PORT" -p 127.0.0.1:9000:9000 \\
 				--mount type=volume,src=tashi-depin-worker-auth,dst=/home/worker/auth \\
 		    --name "$name" -e RUST_LOG="$RUST_LOG" $volumes_from \\
-		    $IMAGE_TAG \\
+		    --pull=always $IMAGE_TAG \\
 				/home/worker/auth \\
 				$auto_update_infix \\
 		    ${PUBLIC_IP:+"--agent-public-addr=$PUBLIC_IP:$AGENT_PORT"}
