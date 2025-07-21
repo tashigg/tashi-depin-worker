@@ -2,8 +2,6 @@
 
 IMAGE_TAG='ghcr.io/tashigg/tashi-depin-worker:0'
 TROUBLESHOOT_LINK='https://docs.tashi.gg/resources/depin/worker-node-install-docker#troubleshooting'
-NEXT_STEP_LINK='http://localhost:9000/'
-COMMAND_CENTER_URL='https://depin.tashi.dev/'
 RUST_LOG='info,tashi_depin_worker=debug,tashi_depin_common=debug'
 
 AGENT_PORT=39065
