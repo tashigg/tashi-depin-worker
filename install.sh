@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 
+# Make `echo` default to `echo -e`
+shopt -s xpg_echo
+
 IMAGE_TAG='ghcr.io/tashigg/tashi-depin-worker:0'
+
 TROUBLESHOOT_LINK='https://docs.tashi.gg/resources/depin/worker-node-install-docker#troubleshooting'
+MANUAL_UPDATE_LINK='https://docs.tashi.network/resources/depin/worker-node-install-docker#manual-update'
+
+DOCKER_ROOTLESS_LINK='https://docs.docker.com/engine/install/linux-postinstall/'
+PODMAN_ROOTLESS_LINK='https://github.com/containers/podman/blob/main/docs/tutorials/rootless_tutorial.md'
+
 RUST_LOG='info,tashi_depin_worker=debug,tashi_depin_common=debug'
 
 AGENT_PORT=39065
@@ -15,16 +24,41 @@ CHECKMARK="${GREEN}✓${RESET}"
 CROSSMARK="${RED}✗${RESET}"
 WARNING="${YELLOW}⚠${RESET}"
 
+STYLE_BOLD=$(tput bold)
+STYLE_NORMAL=$(tput sgr0)
+
 WARNINGS=0
 ERRORS=0
 
-# Logging function with timestamps
+# Logging function (with level and timestamps if `LOG_EXPANDED` is set to a truthy value)
 log() {
-	local level="$1"
-	local message="$2"
-	local timestamp
-	timestamp=$(date +"%Y-%m-%d %H:%M:%S")
-	printf "[${timestamp}] [${level}] ${message}\n" 1>&2
+	# Allow the message to be piped for heredocs
+	local message="${2:-$(cat)}"
+
+	if [[ -v "$LOG_EXPANDED" && "$LOG_EXPANDED" -ne 0 ]]; then
+		local level="$1"
+		local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+
+		printf "[${timestamp}] [${level}] ${message}\n" 1>&2
+	else
+		echo -e "$message"
+	fi
+}
+
+make_bold() {
+	local s="${1:-$(cat)}"
+
+	echo -e "$STYLE_BOLD${s}$STYLE_NORMAL"
+}
+
+# Print a blank line for visual separation.
+horizontal_line() {
+	WIDTH=${COLUMNS:-$(tput cols)}
+	FILL_CHAR='-'
+
+	# Prints a zero-length string but specifies it should be `$COLUMNS` wide, so the `printf` command pads it with blanks.
+	# We then use `tr` to replace those blanks with our padding character of choice.
+	printf '\n%*s\n\n' "$WIDTH" '' | tr ' ' "$FILL_CHAR"
 }
 
 # munch args
@@ -35,16 +69,22 @@ SUBCOMMAND=install
 while [[ $# -gt 0 ]]; do
 	case $1 in
 		--ignore-warnings)
-			IGNORE_WARNS=yes
-			shift
+			IGNORE_WARNINGS=y
+			;;
+		-y | --yes)
+			YES=1
+			;;
+		--auto-update)
+			AUTO_UPDATE=y
+			;;
+		--image-tag=*)
+			IMAGE_TAG="${1#"--image-tag="}"
 			;;
 		--install)
 			SUBCOMMAND=install
-			shift
 			;;
 		--update)
 			SUBCOMMAND=update
-			shift
 			;;
 		-*)
 			echo "Unknown option $1"
@@ -52,9 +92,10 @@ while [[ $# -gt 0 ]]; do
 			;;
 		*)
 			POSITIONAL_ARGS+=("$1")
-			shift
 			;;
 	esac
+
+	shift
 done
 
 set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
@@ -202,6 +243,19 @@ check_container_runtime() {
 	fi
 }
 
+# Check network connectivity & NAT status
+check_internet() {
+	# Step 1: Confirm Public Internet Access (No ICMP Required)
+	if curl -s --head --connect-timeout 3 https://google.com | grep "HTTP" >/dev/null 2>&1; then
+		log "INFO" "Internet Connectivity: ${CHECKMARK} Device has public Internet access."
+	elif wget --spider --timeout=3 --quiet https://google.com; then
+		log "INFO" "Internet Connectivity: ${CHECKMARK} Device has public Internet access."
+	else
+		log "ERROR" "Internet Connectivity: ${CROSSMARK} No internet access detected!"
+		((ERRORS++))
+	fi
+}
+
 get_local_ip() {
 	if check_command hostname; then
 		LOCAL_IP=$(hostname -I | awk '{print $1}')
@@ -215,32 +269,18 @@ get_public_ip() {
 	PUBLIC_IP=$(curl -s https://api.ipify.org || wget -qO- https://api.ipify.org)
 }
 
-# Check network connectivity & NAT status
 check_nat() {
-	# Step 1: Confirm Public Internet Access (No ICMP Required)
-	if curl -s --head --connect-timeout 3 https://google.com | grep "HTTP" >/dev/null 2>&1; then
-		log "INFO" "Internet Connectivity: ${CHECKMARK} Device has public Internet access."
-	elif wget --spider --timeout=3 --quiet https://google.com; then
-		log "INFO" "Internet Connectivity: ${CHECKMARK} Device has public Internet access."
-	else
-		log "ERROR" "Internet Connectivity: ${CROSSMARK} No internet access detected!"
-		((ERRORS++))
-		return
-	fi
-
 	# Step 2: Get local & public IP
 	get_local_ip
 	get_public_ip
 
 	if [[ -z "$LOCAL_IP" ]]; then
 		log "WARNING" "NAT Check: ${WARNING} Could not determine local IP."
-		((WARNINGS++))
 		return
 	fi
 
 	if [[ -z "$PUBLIC_IP" ]]; then
 		log "WARNING" "NAT Check: ${WARNING} Could not determine public IP."
-		((WARNINGS++))
 		return
 	fi
 
@@ -250,10 +290,14 @@ check_nat() {
 		return
 	fi
 
-	log "WARNING" "NAT Check: ${WARNING} NAT detected (Local: $LOCAL_IP, Public: $PUBLIC_IP)"
-	log "WARNING" "If this device is not accessible from the Internet, some DePIN services will be disabled; earnings may be less than a publicly accessible node."
-	log "WARNING" "Ensure port forwarding of UDP port $AGENT_PORT is properly configured, or otherwise expose this device to the Internet."
-	((WARNINGS++))
+	log "OPTIMIZATION" "NAT Check: NAT detected (Local: $LOCAL_IP, Public: $PUBLIC_IP)"
+	log "OPTIMIZATION" <<-EOF
+		If this device is not accessible from the Internet, some DePIN services will be disabled;
+		earnings may be less than a publicly accessible node.
+
+		For maximum earning potential, ensure UDP port $AGENT_PORT is forwarded to this device.
+		Consult your router's manual or contact your Internet Service Provider for details.
+	EOF
 }
 
 check_root_required() {
@@ -267,8 +311,13 @@ check_root_required() {
 		else
 			SUDO_CMD="sudo -g docker"
 			log "WARNING" "Privilege Check: ${WARNING} User is not in 'docker' group."
-			log "WARNING" "${WARNING} 'docker run' command will be executed using '${SUDO_CMD}'"
-			log "WARNING" "For more information, see https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user"
+			log "WARNING" <<-EOF
+				${WARNING} 'docker run' command will be executed using '${SUDO_CMD}'
+				You may be prompted for your password during setup.
+
+				Rootless configuration is recommended to avoid this requirement.
+				For more information, see $DOCKER_ROOTLESS_LINK
+			EOF
 			((WARNINGS++))
 		fi
 	elif [[ "$CONTAINER_RT" == "podman" ]]; then
@@ -279,106 +328,171 @@ check_root_required() {
 		else
 			SUDO_CMD="sudo"
 			log "WARNING" "Privilege Check: ${WARNING} User cannot create rootless Podman containers."
-			log "WARNING" "${WARNING} 'podman run' command will be executed using '${SUDO_CMD}'"
-			log "WARNING" "For more information, see https://github.com/containers/podman/blob/main/docs/tutorials/rootless_tutorial.md"
+			log "WARNING" <<-EOF
+				${WARNING} 'podman run' command will be executed using '${SUDO_CMD}'
+				You may be prompted for your sudo password during setup.
+
+				Rootless configuration is recommended to avoid this requirement.
+				For more information, see $PODMAN_ROOTLESS_LINK
+			EOF
 			((WARNINGS++))
 		fi
 	fi
 }
 
-continue_prompt() {
-	if [[ "$IGNORE_WARNS" == yes ]]; then
-		return 0
-	elif [[ ! (-t 2) ]]; then # If stderr is not connected to a TTY, we can't prompt.
-		log "ERROR" "Script not running in interactive mode. Re-run script with flag '--ignore-warnings'"
+prompt_auto_updates() {
+	log "INFO" <<-EOF
+		Your DePIN worker will require periodic updates to ensure that it keeps up with new features and bug fixes.
+		Out-of-date workers may be excluded from the DePIN network and be unable to complete jobs or earn rewards.
+
+		We recommend enabling automatic updates, which take place entirely in the container
+		and do not make any changes to your system.
+
+		Otherwise, you will need to check the worker logs regularly to see when a new update is available,
+		and apply the update manually.\n
+	EOF
+
+	local choice
+
+	if [[ (-t 2)]]; then # If stderr is not connected to a TTY, we can't prompt.
+		read -r -p "Enable automatic updates? (Y/n) " choice </dev/tty
+	else
+		choice=n
+	fi
+
+	# Blank line
+	echo ""
+
+	case "$choice" in
+		n | N)
+			log "INFO" "Automatic updates $(make_bold 'disabled'). For manual upgrade instructions, see:\n$MANUAL_UPDATE_LINK"
+		;;
+		*)
+			log "INFO" "Automatic updates enabled."
+			AUTO_UPDATE=y
+			;;
+	esac
+}
+
+check_warnings() {
+	if [[ "$ERRORS" -gt 0 ]]; then
+  	log "ERROR" "System does not meet minimum requirements. Exiting."
+  	exit 1
+  elif [[ "$WARNINGS" -eq 0 ]]; then
+  	log "INFO" "System requirements met."
+  	return
+  fi
+
+	log "WARNING" "System meets minimum but not recommended requirements.\n"
+
+	if [[ ! (-t 2) && ! $YES ]]; then # If stderr is not connected to a TTY, we can't prompt.
+		log "ERROR" 'Cannot prompt to continue. Re-run this with `--ignore-warnings` to continue installation.'
 		exit 1
 	fi
 
 	# Always read from TTY even if piped in
 	read -r -p "Do you want to continue anyway? (y/N) " choice </dev/tty
-	case "$choice" in
-		y | Y) log "INFO" "Continuing..." ;;
-		*)
-			log "ERROR" "Exiting."
-			exit 1
-			;;
-	esac
-}
 
-# User confirmation if warnings exist
-ask_continue() {
-	if [[ "$ERRORS" -gt 0 ]]; then
-		log "ERROR" "System does not meet minimum requirements. Exiting."
-		exit 1
-	elif [[ "$WARNINGS" -gt 0 ]]; then
-		log "WARNING" "System meets minimum but not recommended requirements."
-		continue_prompt
+	if [[ "$choice" != [yY] ]]; then
+		exit 0
 	fi
 }
 
-prompt_auto_updates() {
-	read -r -p "Enable automatic updates (inside the container)? (Y/n)" choice </dev/tty
-	case "$choice" in
-		n | N) ;;
-		*) AUTO_UPDATE=y ;;
-	esac
+prompt_continue() {
+	if [[ ! (-t 2) && ! $YES ]]; then # If stderr is not connected to a TTY, we can't prompt.
+		log "ERROR" 'Cannot prompt to continue. Re-run this with `--yes` to continue installation.'
+		exit 1
+	fi
+
+	# Always read from TTY even if piped in
+	read -r -p "Ready to $SUBCOMMAND worker node. Do you want to continue? (Y/n) " choice </dev/tty
+
+	if [[ "$choice" == [nN] ]]; then
+		exit 0
+	fi
+
+	echo ""
 }
 
 CONTAINER_NAME=tashi-depin-worker
-VOLUME_NAME=tashi-depin-worker-auth
-VOLUME_MOUNT_PATH="/home/worker/auth"
+AUTH_VOLUME=tashi-depin-worker-auth
+AUTH_DIR="/home/worker/auth"
 
-make_install_cmd() {
+# Docker rejects `--pull=always` with an image SHA
+PULL_FLAG=$([[ "$IMAGE_TAG" == ghcr* ]] && echo "--pull=always")
+
+make_setup_cmd() {
+		local sudo="${1-$SUDO_CMD}"
+
+		cat <<-EOF
+			${sudo:+"$sudo "}${CONTAINER_RT} run --rm -it \\
+				--mount type=volume,src=$AUTH_VOLUME,dst=$AUTH_DIR \\
+				$PULL_FLAG $IMAGE_TAG \\
+				interactive-setup $AUTH_DIR
+		EOF
+}
+
+make_run_cmd() {
 	local sudo="${1-$SUDO_CMD}"
-	local cmd="${2-"run"}"
+	local cmd="${2-"run -d"}"
 	local name="${3-$CONTAINER_NAME}"
 	local volumes_from="${4+"--volumes-from=$4"}"
 	local auto_update_infix=$([[ $AUTO_UPDATE == "y" ]] && echo "--unstable-update-download-path /tmp/tashi-depin-worker")
 
+	local restart_always=$([[ "$CONTAINER_RT" == "docker" ]] && echo "--restart=always")
+
 	cat <<-EOF
-		${sudo:+"$sudo "}${CONTAINER_RT} $cmd -it -p "$AGENT_PORT:$AGENT_PORT" -p 127.0.0.1:9000:9000 \\
-				--mount type=volume,src=tashi-depin-worker-auth,dst=/home/worker/auth \\
+		${sudo:+"$sudo "}${CONTAINER_RT} $cmd -p "$AGENT_PORT:$AGENT_PORT" -p 127.0.0.1:9000:9000 \\
+				--mount type=volume,src=$AUTH_VOLUME,dst=$AUTH_DIR \\
 		    --name "$name" -e RUST_LOG="$RUST_LOG" $volumes_from \\
-		    --pull=always $IMAGE_TAG \\
-				/home/worker/auth \\
+		    $PULL_FLAG $restart_always $IMAGE_TAG \\
+				run $AUTH_DIR \\
 				$auto_update_infix \\
 		    ${PUBLIC_IP:+"--agent-public-addr=$PUBLIC_IP:$AGENT_PORT"}
 	EOF
 }
 
 install() {
-	prompt_auto_updates
+	log "INFO" "Installing worker. The commands being run will be printed for transparency.\n"
 
-	local run_cmd=$(make_install_cmd)
+	log "INFO" "Starting worker in interactive setup mode.\n"
 
-	sh -c "set -ex; $run_cmd"
+	local setup_cmd=$(make_setup_cmd)
 
-	if [[ $? -ne 0 ]]; then
-		log "ERROR" "Setup failed to start: ${CROSSMARK} Please see the following page for troubleshooting instructions: ${TROUBLESHOOT_LINK}."
+	sh -c "set -ex; $setup_cmd"
+
+	local exit_code=$?
+
+	echo ""
+
+	if [[ $exit_code -eq 130 ]]; then
+		log "INFO" "Worker setup cancelled. You may re-run this script at any time."
+		exit 0
+	elif [[ $exit_code -ne 0 ]]; then
+		log "ERROR" "Setup failed ($exit_code): ${CROSSMARK} Please see the following page for troubleshooting instructions: ${TROUBLESHOOT_LINK}."
 		exit 1
 	fi
 
-	if [[ "$CONTAINER_RT" = "docker" ]]; then
-		${SUDO_CMD+"$SUDO_CMD "}docker container update "$CONTAINER_NAME" --restart=always
+	local run_cmd=$(make_run_cmd)
+
+	sh -c "set -ex; $run_cmd"
+
+	exit_code=$?
+
+	echo ""
+
+	if [[ $exit_code -ne 0 ]]; then
+		log "ERROR" "Worker failed to start ($exit_code): ${CROSSMARK} Please see the following page for troubleshooting instructions: ${TROUBLESHOOT_LINK}."
 	fi
-
-	${SUDO_CMD+"$SUDO_CMD "}"$CONTAINER_RT" start "$CONTAINER_NAME"
-
-	if [[ $? -ne 0 ]]; then
-		log "ERROR" "Worker failed to start: ${CROSSMARK} Please see the following page for troubleshooting instructions: ${TROUBLESHOOT_LINK}."
-	fi
-
-	log "INFO" "Worker is running: ${CHECKMARK}"
 }
 
 update() {
+	log "INFO" "Updating worker. The commands being run will be printed for transparency.\n"
+
 	local container_old="$CONTAINER_NAME"
 	local container_new="$CONTAINER_NAME-new"
 
-	# Prompt the user in case they want to enable updates now.
-	prompt_auto_updates
-
-	local create_cmd=$(make_install_cmd "" "create" "$container_new" "$container_old")
+	local create_cmd=$(make_run_cmd "" "create" "$container_new" "$container_old")
 
 	# Execute this whole next block as `sudo` if necessary.
 	# Piping means the sub-process reads line by line and can tell us right where it failed.
@@ -408,9 +522,9 @@ update() {
 		$CONTAINER_RT rename $container_old $CONTAINER_NAME-old
 		$CONTAINER_RT rename $container_new $CONTAINER_NAME
 
-		read -r -p "would you like to delete $CONTAINER_NAME-old (y/N)" choice </dev/tty
+		read -r -p "Would you like to delete $CONTAINER_NAME-old? (Y/n) " choice </dev/tty
 
-		if [[ "\$choice" =~ "^(Y|y)$" ]]; then
+		if [[ "\$choice" != [nN] ]]; then
 				$CONTAINER_RT rm $CONTAINER_NAME-old
 		fi
 	EOF
@@ -453,7 +567,22 @@ display_logo() {
 		@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@*-::@@::-*@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 		@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@#=@@=#@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
+
 	EOF
+}
+
+post_install() {
+		echo ""
+
+		log "INFO" "Worker is running: ${CHECKMARK}"
+
+  	echo ""
+
+  	local status_cmd="${SUDO_CMD:+"$sudo "}${CONTAINER_RT} ps"
+  	local logs_cmd="${sudo:+"$sudo "}${CONTAINER_RT} logs $CONTAINER_NAME"
+
+  	log "INFO" "To check the status of your worker: '$status_cmd' (name: $CONTAINER_NAME)"
+  	log "INFO" "To view the logs of your worker: '$logs_cmd'"
 }
 
 # Detect OS before running checks
@@ -461,22 +590,42 @@ detect_os
 
 # Run all checks
 display_logo
+
 log "INFO" "Starting system checks..."
+
+echo ""
+
 check_cpu
 check_memory
 check_disk
 check_container_runtime
 check_root_required
-check_nat # <- Integrated NAT check
+check_internet
 
-ask_continue
+echo ""
 
-log "INFO" "All checks passed or user chose to continue."
+check_warnings
+
+horizontal_line
+
+# Integrated NAT check. This is separate from system requirements because most manually started worker nodes
+# are expected to be behind some sort of NAT, so this is mostly informational.
+check_nat
+
+horizontal_line
+
+prompt_auto_updates
+
+horizontal_line
+
+prompt_continue
 
 case "$SUBCOMMAND" in
 	install) install ;;
 	update) update ;;
 	*)
 		log "ERROR" "BUG: no handler for $($SUBCOMMAND)"
-		;;
+		exit 1
 esac
+
+post_install
