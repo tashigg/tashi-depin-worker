@@ -439,7 +439,7 @@ make_run_cmd() {
 	local volumes_from="${4+"--volumes-from=$4"}"
 	local auto_update_infix=$([[ $AUTO_UPDATE == "y" ]] && echo "--unstable-update-download-path /tmp/tashi-depin-worker")
 
-	local restart_always=$([[ "$CONTAINER_RT" == "docker" ]] && echo "--restart=always")
+	local restart_always=$([[ "$CONTAINER_RT" == "docker" ]] && echo "--restart=on-failure")
 
 	cat <<-EOF
 		${sudo:+"$sudo "}${CONTAINER_RT} $cmd -p "$AGENT_PORT:$AGENT_PORT" -p 127.0.0.1:9000:9000 \\
