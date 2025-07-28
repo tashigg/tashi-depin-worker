@@ -5,8 +5,8 @@ shopt -s xpg_echo
 
 IMAGE_TAG='ghcr.io/tashigg/tashi-depin-worker:0'
 
-TROUBLESHOOT_LINK='https://docs.tashi.gg/resources/depin/worker-node-install-docker#troubleshooting'
-MANUAL_UPDATE_LINK='https://docs.tashi.network/resources/depin/worker-node-install-docker#manual-update'
+TROUBLESHOOT_LINK='https://docs.tashi.network/nodes/node-installation/important-notes#troubleshooting'
+MANUAL_UPDATE_LINK='https://docs.tashi.network/nodes/node-installation/important-notes#manual-update'
 
 DOCKER_ROOTLESS_LINK='https://docs.docker.com/engine/install/linux-postinstall/'
 PODMAN_ROOTLESS_LINK='https://github.com/containers/podman/blob/main/docs/tutorials/rootless_tutorial.md'
