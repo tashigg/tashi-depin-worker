@@ -35,7 +35,7 @@ log() {
 	# Allow the message to be piped for heredocs
 	local message="${2:-$(cat)}"
 
-	if [[ -v "$LOG_EXPANDED" && "$LOG_EXPANDED" -ne 0 ]]; then
+	if [[ "${LOG_EXPANDED:-0}" -ne 0 ]]; then
 		local level="$1"
 		local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
 
