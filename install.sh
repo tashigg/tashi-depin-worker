@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2155,SC2181
 
 IMAGE_TAG='ghcr.io/tashigg/tashi-depin-worker:0'
 
@@ -101,6 +102,7 @@ set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
 # Detect OS safely
 detect_os() {
 	OS=$(
+		# shellcheck disable=SC1091
 		source /etc/os-release >/dev/null 2>&1
 		echo "${ID:-unknown}"
 	)
@@ -126,8 +128,6 @@ suggest_install() {
 NPROC_CMD=$(command -v nproc || echo "")
 GREP_CMD=$(command -v grep || echo "")
 DF_CMD=$(command -v df || echo "")
-DOCKER_CMD=$(command -v docker || echo "")
-PODMAN_CMD=$(command -v podman || echo "")
 
 # Check if a command exists
 check_command() {
@@ -141,10 +141,10 @@ check_platform() {
 	# Bash on MacOS doesn't support `@(pattern-list)` apparently?
 	if [[ "$arch" == "amd64" || "$arch" == "x86_64" ]]; then
 		ARCH='x86_64'
-		log "INFO" "Platform Check: ${CHECKMARK} supported platform $arch"
+		log "INFO" "Platform Check: ${CHECKMARK} supported platform_arg $arch"
 	elif [[ "$OS" == "macos" && "$arch" == arm64 ]]; then
 		ARCH='arm64'
-		log "WARNING" "Platform Check: ${WARNING} unsupported platform $arch"
+		log "WARNING" "Platform Check: ${WARNING} unsupported platform_arg $arch"
 		log "INFO" <<-EOF
 			MacOS Apple Silicon is not currently supported, but the worker can still run through the Rosetta compatibility layer.
 			Performance and earnings will be less than a native node.
@@ -152,7 +152,7 @@ check_platform() {
 		EOF
 		((WARNINGS++))
 	else
-		log "ERROR" "Platform Check: ${CROSSMARK} unsupported platform $arch"
+		log "ERROR" "Platform Check: ${CROSSMARK} unsupported platform_arg $arch"
 		log "INFO" "Join the Tashi Discord to request support for your system."
 		((ERRORS++))
 		return
@@ -293,13 +293,15 @@ get_public_ip() {
 }
 
 check_nat() {
-	local nat_message=$(cat <<-EOF
-		If this device is not accessible from the Internet, some DePIN services will be disabled;
-		earnings may be less than a publicly accessible node.
+	local nat_message=$(
+		cat <<-EOF
+			If this device is not accessible from the Internet, some DePIN services will be disabled;
+			earnings may be less than a publicly accessible node.
 
-		For maximum earning potential, ensure UDP port $AGENT_PORT is forwarded to this device.
-		Consult your router's manual or contact your Internet Service Provider for details.
-	EOF);
+			For maximum earning potential, ensure UDP port $AGENT_PORT is forwarded to this device.
+			Consult your router's manual or contact your Internet Service Provider for details.
+		EOF
+	);
 
 	if [[ "$OS" == "macos" ]]; then
 		log "WARNING" "NAT Check: ${WARNING} skipped on MacOS."
@@ -435,8 +437,13 @@ check_warnings() {
 
 	log "WARNING" "System meets minimum but not recommended requirements.\n"
 
+	if [[ "$IGNORE_WARNINGS" ]]; then
+			log "INFO" "'--ignore-warnings' was passed. Continuing with installation."
+			return
+	fi
+
 	if [[ ! (-t 2) && ! $YES ]]; then # If stderr is not connected to a TTY, we can't prompt.
-		log "ERROR" 'Cannot prompt to continue. Re-run this with `--ignore-warnings` to continue installation.'
+		log "ERROR" "Cannot prompt to continue. Re-run this with '--ignore-warnings' to continue installation."
 		exit 1
 	fi
 
@@ -449,7 +456,7 @@ check_warnings() {
 
 prompt_continue() {
 	if [[ ! (-t 2) && ! $YES ]]; then # If stderr is not connected to a TTY, we can't prompt.
-		log "ERROR" 'Cannot prompt to continue. Re-run this with `--yes` to continue installation.'
+		log "ERROR" "Cannot prompt to continue. Re-run this with '--yes' to continue installation."
 		exit 1
 	fi
 
@@ -469,6 +476,7 @@ AUTH_DIR="/home/worker/auth"
 # Docker rejects `--pull=always` with an image SHA
 PULL_FLAG=$([[ "$IMAGE_TAG" == ghcr* ]] && echo "--pull=always")
 
+# shellcheck disable=SC2120
 make_setup_cmd() {
 		local sudo="${1-$SUDO_CMD}"
 
@@ -485,17 +493,30 @@ make_run_cmd() {
 	local cmd="${2-"run -d"}"
 	local name="${3-$CONTAINER_NAME}"
 	local volumes_from="${4+"--volumes-from=$4"}"
-	local auto_update_infix=$([[ $AUTO_UPDATE == "y" ]] && echo "--unstable-update-download-path /tmp/tashi-depin-worker")
 
-	local restart_always=$([[ "$CONTAINER_RT" == "docker" ]] && echo "--restart=on-failure")
+	local auto_update_arg=''
+	local restart_arg=''
+	local platform_arg=''
+
+	if [[ $AUTO_UPDATE == "y" ]]; then
+		auto_update_arg="--unstable-update-download-path /tmp/tashi-depin-worker"
+	fi
+
+	if [[ "$CONTAINER_RT" == "docker" ]]; then
+		restart_arg="--restart=on-failure"
+	fi
+
+	if [[ "$ARCH" == "arm64" ]]; then
+		platform_arg="--platform linux/amd64"
+	fi
 
 	cat <<-EOF
 		${sudo:+"$sudo "}${CONTAINER_RT} $cmd -p "$AGENT_PORT:$AGENT_PORT" -p 127.0.0.1:9000:9000 \\
 				--mount type=volume,src=$AUTH_VOLUME,dst=$AUTH_DIR \\
 		    --name "$name" -e RUST_LOG="$RUST_LOG" $volumes_from \\
-		    $PULL_FLAG $restart_always $IMAGE_TAG \\
+		    $PULL_FLAG $restart_arg $platform_arg $IMAGE_TAG \\
 				run $AUTH_DIR \\
-				$auto_update_infix \\
+				$auto_update_arg \\
 		    ${PUBLIC_IP:+"--agent-public-addr=$PUBLIC_IP:$AGENT_PORT"}
 	EOF
 }
