@@ -39,16 +39,17 @@ log() {
 		local level="$1"
 		local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
 
-		printf "[${timestamp}] [${level}] ${message}\n" 1>&2
+		printf "[%s] [%s] %b\n" "${timestamp}" "${level}" "${message}" 1>&2
 	else
-		echo -e "$message"
+		printf "%b\n" "$message"
 	fi
 }
 
 make_bold() {
+	# Allows heredoc expansion with pipes
 	local s="${1:-$(cat)}"
 
-	echo -e "$STYLE_BOLD${s}$STYLE_NORMAL"
+	printf "%s%s%s" "$STYLE_BOLD" "${s}" "$STYLE_NORMAL"
 }
 
 # Print a blank line for visual separation.
@@ -134,6 +135,30 @@ PODMAN_CMD=$(command -v podman || echo "")
 # Check if a command exists
 check_command() {
 	command -v "$1" >/dev/null 2>&1
+}
+
+# Platform Check
+check_platform() {
+	local arch=$(uname -m)
+
+	if [[ "$arch" == @(amd64|x86_64) ]]; then
+		ARCH='x86_64'
+		log "INFO" "Platform Check: ${CHECKMARK} supported platform $arch"
+	elif [[ "$OS" == "macos" && "$arch" == arm64 ]]; then
+		ARCH='arm64'
+		log "WARNING" "Platform Check: ${WARNING} unsupported platform $arch"
+		log "INFO" <<-EOF
+			MacOS Apple Silicon is not currently supported, but the worker can still run through the Rosetta compatibility layer.
+			Performance and earnings will be less than a native node.
+			You may be prompted to install Rosetta when the worker node starts.
+		EOF
+		((WARNINGS++))
+	else
+		log "ERROR" "Platform Check: ${CROSSMARK} unsupported platform $arch"
+		log "INFO" "Join the Tashi Discord to request support for your system."
+		((ERRORS++))
+		return
+	fi
 }
 
 # CPU Check
@@ -301,6 +326,13 @@ check_nat() {
 }
 
 check_root_required() {
+	# Docker and Podman on Mac run a Linux VM. The client commands outside the VM do not require root.
+	if [[ "$OS" == "macos" ]]; then
+		SUDO_CMD=''
+		log "INFO" "Privilege Check: ${CHECKMARK} Root privileges are not needed on MacOS"
+		return
+	fi
+
 	if [[ "$CONTAINER_RT" == "docker" ]]; then
 		if (groups "$USER" | grep docker >/dev/null); then
 			log "INFO" "Privilege Check: ${CHECKMARK} User is in 'docker' group."
@@ -352,12 +384,10 @@ prompt_auto_updates() {
 		and apply the update manually.\n
 	EOF
 
-	local choice
+	local choice=n
 
 	if [[ (-t 2)]]; then # If stderr is not connected to a TTY, we can't prompt.
-		read -r -p "Enable automatic updates? (Y/n) " choice </dev/tty
-	else
-		choice=n
+		prompt "Enable automatic updates? (Y/n) " choice
 	fi
 
 	# Blank line
@@ -372,6 +402,19 @@ prompt_auto_updates() {
 			AUTO_UPDATE=y
 			;;
 	esac
+}
+
+prompt() {
+	local prompt="${1?}"
+	local variable="${2?}"
+
+	# read -p in zsh is "read from coprocess", whatever that means
+	printf "%b" "$prompt"
+
+	# Always read from TTY even if piped in
+	read -r "${variable?}" </dev/tty
+
+	return $?
 }
 
 check_warnings() {
@@ -390,8 +433,7 @@ check_warnings() {
 		exit 1
 	fi
 
-	# Always read from TTY even if piped in
-	read -r -p "Do you want to continue anyway? (y/N) " choice </dev/tty
+	prompt "Do you want to continue anyway? (y/N) " choice
 
 	if [[ "$choice" != [yY] ]]; then
 		exit 0
@@ -404,8 +446,7 @@ prompt_continue() {
 		exit 1
 	fi
 
-	# Always read from TTY even if piped in
-	read -r -p "Ready to $SUBCOMMAND worker node. Do you want to continue? (Y/n) " choice </dev/tty
+	prompt "Ready to $SUBCOMMAND worker node. Do you want to continue? (Y/n) " choice
 
 	if [[ "$choice" == [nN] ]]; then
 		exit 0
@@ -522,7 +563,8 @@ update() {
 		$CONTAINER_RT rename $container_old $CONTAINER_NAME-old
 		$CONTAINER_RT rename $container_new $CONTAINER_NAME
 
-		read -r -p "Would you like to delete $CONTAINER_NAME-old? (Y/n) " choice </dev/tty
+		echo -n "Would you like to delete $CONTAINER_NAME-old? (Y/n) "
+		read -r choice </dev/tty
 
 		if [[ "\$choice" != [nN] ]]; then
 				$CONTAINER_RT rm $CONTAINER_NAME-old
@@ -595,6 +637,7 @@ log "INFO" "Starting system checks..."
 
 echo ""
 
+check_platform
 check_cpu
 check_memory
 check_disk
