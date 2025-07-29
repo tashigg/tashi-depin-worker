@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 
-# Make `echo` default to `echo -e`
-shopt -s xpg_echo
-
 IMAGE_TAG='ghcr.io/tashigg/tashi-depin-worker:0'
 
 TROUBLESHOOT_LINK='https://docs.tashi.network/nodes/node-installation/important-notes#troubleshooting'
@@ -141,7 +138,8 @@ check_command() {
 check_platform() {
 	local arch=$(uname -m)
 
-	if [[ "$arch" == @(amd64|x86_64) ]]; then
+	# Bash on MacOS doesn't support `@(pattern-list)` apparently?
+	if [[ "$arch" == "amd64" || "$arch" == "x86_64" ]]; then
 		ARCH='x86_64'
 		log "INFO" "Platform Check: ${CHECKMARK} supported platform $arch"
 	elif [[ "$OS" == "macos" && "$arch" == arm64 ]]; then
@@ -295,17 +293,32 @@ get_public_ip() {
 }
 
 check_nat() {
+	local nat_message=$(cat <<-EOF
+		If this device is not accessible from the Internet, some DePIN services will be disabled;
+		earnings may be less than a publicly accessible node.
+
+		For maximum earning potential, ensure UDP port $AGENT_PORT is forwarded to this device.
+		Consult your router's manual or contact your Internet Service Provider for details.
+	EOF);
+
+	if [[ "$OS" == "macos" ]]; then
+		log "WARNING" "NAT Check: ${WARNING} skipped on MacOS."
+		log "WARNING" "$nat_message"
+	fi
+
 	# Step 2: Get local & public IP
 	get_local_ip
 	get_public_ip
 
 	if [[ -z "$LOCAL_IP" ]]; then
 		log "WARNING" "NAT Check: ${WARNING} Could not determine local IP."
+		log "WARNING" "$nat_message"
 		return
 	fi
 
 	if [[ -z "$PUBLIC_IP" ]]; then
 		log "WARNING" "NAT Check: ${WARNING} Could not determine public IP."
+		log "WARNING" "$nat_message"
 		return
 	fi
 
@@ -315,14 +328,8 @@ check_nat() {
 		return
 	fi
 
-	log "OPTIMIZATION" "NAT Check: NAT detected (Local: $LOCAL_IP, Public: $PUBLIC_IP)"
-	log "OPTIMIZATION" <<-EOF
-		If this device is not accessible from the Internet, some DePIN services will be disabled;
-		earnings may be less than a publicly accessible node.
-
-		For maximum earning potential, ensure UDP port $AGENT_PORT is forwarded to this device.
-		Consult your router's manual or contact your Internet Service Provider for details.
-	EOF
+	log "WARNING" "NAT Check: NAT detected (Local: $LOCAL_IP, Public: $PUBLIC_IP)"
+	log "WARNING" "$nat_message"
 }
 
 check_root_required() {
