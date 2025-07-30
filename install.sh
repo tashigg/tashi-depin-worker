@@ -31,7 +31,12 @@ ERRORS=0
 # Logging function (with level and timestamps if `LOG_EXPANDED` is set to a truthy value)
 log() {
 	# Allow the message to be piped for heredocs
-	local message="${2:-$(cat)}"
+	local message
+	if [[ $# -ge 2 ]]; then
+		message="$2"
+	else
+		message="$(cat)"
+	fi
 
 	if [[ "${LOG_EXPANDED:-0}" -ne 0 ]]; then
 		local level="$1"
@@ -101,6 +106,12 @@ set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
 
 # Detect OS safely
 detect_os() {
+	# Check for WSL first
+	if [[ -n "${WSL_DISTRO_NAME}" ]] || grep -q Microsoft /proc/version 2>/dev/null; then
+		OS="wsl"
+		return
+	fi
+	
 	OS=$(
 		# shellcheck disable=SC1091
 		source /etc/os-release >/dev/null 2>&1
@@ -227,11 +238,17 @@ check_disk() {
 	case "$OS" in
 		"macos")
 			available_disk_kb=$(
-				"$DF_CMD" -kcI 2>/dev/null |
+				"$DF_CMD" -k / 2>/dev/null |
 					tail -1 |
 					awk '{print $4}'
 			)
-			total_mem_bytes=$(sysctl -n hw.memsize)
+			;;
+		"wsl")
+			available_disk_kb=$(
+				"$DF_CMD" -k --total 2>/dev/null |
+					tail -1 |
+					awk '{print $4}'
+			)
 			;;
 		*)
 			available_disk_kb=$(
@@ -282,12 +299,23 @@ check_internet() {
 }
 
 get_local_ip() {
-	if check_command hostname; then
-		LOCAL_IP=$(hostname -I | awk '{print $1}')
-	elif check_command ip; then
-		# Use `ip route` to find what IP address connects to the internet
-		LOCAL_IP=$(ip route get '1.0.0.0' | grep -Po "src \K(\S+)")
-	fi
+	case "$OS" in
+		"macos")
+			LOCAL_IP=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | head -1 | awk '{print $2}')
+			;;
+		"wsl")
+			# In WSL, get the Windows host IP
+			LOCAL_IP=$(ip route | grep default | awk '{print $3}')
+			;;
+		*)
+			if check_command hostname; then
+				LOCAL_IP=$(hostname -I | awk '{print $1}')
+			elif check_command ip; then
+				# Use `ip route` to find what IP address connects to the internet
+				LOCAL_IP=$(ip route get '1.0.0.0' | grep -Po "src \K(\S+)")
+			fi
+			;;
+	esac
 }
 
 get_public_ip() {
@@ -295,18 +323,10 @@ get_public_ip() {
 }
 
 check_nat() {
-	local nat_message=$(
-		cat <<-EOF
-			If this device is not accessible from the Internet, some DePIN services will be disabled;
-			earnings may be less than a publicly accessible node.
+	local nat_message="If this device is not accessible from the Internet, some DePIN services will be disabled; earnings may be less than a publicly accessible node. For maximum earning potential, ensure UDP port $AGENT_PORT is forwarded to this device. Consult your router's manual or contact your Internet Service Provider for details."
 
-			For maximum earning potential, ensure UDP port $AGENT_PORT is forwarded to this device.
-			Consult your router's manual or contact your Internet Service Provider for details.
-		EOF
-	);
-
-	if [[ "$OS" == "macos" ]]; then
-		log "WARNING" "NAT Check: ${WARNING} skipped on MacOS."
+	if [[ "$OS" == "macos" ]] || [[ "$OS" == "wsl" ]]; then
+		log "WARNING" "NAT Check: ${WARNING} skipped on $OS."
 		log "WARNING" "$nat_message"
 		return
 	fi
@@ -338,10 +358,10 @@ check_nat() {
 }
 
 check_root_required() {
-	# Docker and Podman on Mac run a Linux VM. The client commands outside the VM do not require root.
-	if [[ "$OS" == "macos" ]]; then
+	# Docker and Podman on Mac and WSL run a Linux VM. The client commands outside the VM do not require root.
+	if [[ "$OS" == "macos" ]] || [[ "$OS" == "wsl" ]]; then
 		SUDO_CMD=''
-		log "INFO" "Privilege Check: ${CHECKMARK} Root privileges are not needed on MacOS"
+		log "INFO" "Privilege Check: ${CHECKMARK} Root privileges are not needed on $OS"
 		return
 	fi
 
@@ -385,35 +405,29 @@ check_root_required() {
 }
 
 prompt_auto_updates() {
-	log "INFO" <<-EOF
-		Your DePIN worker will require periodic updates to ensure that it keeps up with new features and bug fixes.
-		Out-of-date workers may be excluded from the DePIN network and be unable to complete jobs or earn rewards.
-
-		We recommend enabling automatic updates, which take place entirely in the container
-		and do not make any changes to your system.
-
-		Otherwise, you will need to check the worker logs regularly to see when a new update is available,
-		and apply the update manually.\n
-	EOF
+	log "INFO" "Your DePIN worker will require periodic updates to ensure that it keeps up with new features and bug fixes."
+	log "INFO" "Out-of-date workers may be excluded from the DePIN network and be unable to complete jobs or earn rewards."
+	log "INFO" ""
+	log "INFO" "We recommend enabling automatic updates, which take place entirely in the container"
+	log "INFO" "and do not make any changes to your system."
+	log "INFO" ""
+	log "INFO" "Otherwise, you will need to check the worker logs regularly to see when a new update is available,"
+	log "INFO" "and apply the update manually."
 
 	local choice=n
 
-	if [[ (-t 2)]]; then # If stderr is not connected to a TTY, we can't prompt.
-		prompt "Enable automatic updates? (Y/n) " choice
-	fi
+	printf "Enable automatic updates? (Y/n) " >&2
+	read -r choice </dev/tty
 
 	# Blank line
 	echo ""
 
-	case "$choice" in
-		n | N)
-			log "INFO" "Automatic updates $(make_bold 'disabled'). For manual upgrade instructions, see:\n$MANUAL_UPDATE_LINK"
-		;;
-		*)
-			log "INFO" "Automatic updates enabled."
-			AUTO_UPDATE=y
-			;;
-	esac
+	if [[ "$choice" == "n" ]] || [[ "$choice" == "N" ]]; then
+		log "INFO" "Automatic updates disabled. For manual upgrade instructions, see: $MANUAL_UPDATE_LINK"
+	else
+		log "INFO" "Automatic updates enabled."
+		AUTO_UPDATE=y
+	fi
 }
 
 prompt() {
@@ -421,7 +435,7 @@ prompt() {
 	local variable="${2?}"
 
 	# read -p in zsh is "read from coprocess", whatever that means
-	printf "%b" "$prompt"
+	printf "%b" "$prompt" >&2
 
 	# Always read from TTY even if piped in
 	read -r "${variable?}" </dev/tty
@@ -431,12 +445,12 @@ prompt() {
 
 check_warnings() {
 	if [[ "$ERRORS" -gt 0 ]]; then
-  	log "ERROR" "System does not meet minimum requirements. Exiting."
-  	exit 1
-  elif [[ "$WARNINGS" -eq 0 ]]; then
-  	log "INFO" "System requirements met."
-  	return
-  fi
+		log "ERROR" "System does not meet minimum requirements. Exiting."
+		exit 1
+	elif [[ "$WARNINGS" -eq 0 ]]; then
+		log "INFO" "System requirements met."
+		return
+	fi
 
 	log "WARNING" "System meets minimum but not recommended requirements.\n"
 
@@ -450,6 +464,7 @@ check_warnings() {
 		exit 1
 	fi
 
+	local choice=""
 	prompt "Do you want to continue anyway? (y/N) " choice
 
 	if [[ "$choice" != [yY] ]]; then
@@ -646,8 +661,8 @@ post_install() {
 
   	echo ""
 
-  	local status_cmd="${SUDO_CMD:+"$sudo "}${CONTAINER_RT} ps"
-  	local logs_cmd="${sudo:+"$sudo "}${CONTAINER_RT} logs $CONTAINER_NAME"
+  	local status_cmd="${SUDO_CMD:+"$SUDO_CMD "}${CONTAINER_RT} ps"
+  	local logs_cmd="${SUDO_CMD:+"$SUDO_CMD "}${CONTAINER_RT} logs $CONTAINER_NAME"
 
   	log "INFO" "To check the status of your worker: '$status_cmd' (name: $CONTAINER_NAME)"
   	log "INFO" "To view the logs of your worker: '$logs_cmd'"
@@ -693,8 +708,9 @@ case "$SUBCOMMAND" in
 	install) install ;;
 	update) update ;;
 	*)
-		log "ERROR" "BUG: no handler for $($SUBCOMMAND)"
+		log "ERROR" "BUG: no handler for $SUBCOMMAND"
 		exit 1
+		;;
 esac
 
 post_install
