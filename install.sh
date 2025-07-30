@@ -136,15 +136,18 @@ check_command() {
 
 # Platform Check
 check_platform() {
+	PLATFORM_ARG=''
+
 	local arch=$(uname -m)
 
 	# Bash on MacOS doesn't support `@(pattern-list)` apparently?
 	if [[ "$arch" == "amd64" || "$arch" == "x86_64" ]]; then
-		ARCH='x86_64'
-		log "INFO" "Platform Check: ${CHECKMARK} supported platform_arg $arch"
+		log "INFO" "Platform Check: ${CHECKMARK} supported platform $arch"
 	elif [[ "$OS" == "macos" && "$arch" == arm64 ]]; then
-		ARCH='arm64'
-		log "WARNING" "Platform Check: ${WARNING} unsupported platform_arg $arch"
+		# Ensure Apple Silicon runs the container as x86_64 using Rosetta
+		PLATFORM_ARG='--platform linux/amd64'
+
+		log "WARNING" "Platform Check: ${WARNING} unsupported platform $arch"
 		log "INFO" <<-EOF
 			MacOS Apple Silicon is not currently supported, but the worker can still run through the Rosetta compatibility layer.
 			Performance and earnings will be less than a native node.
@@ -152,7 +155,7 @@ check_platform() {
 		EOF
 		((WARNINGS++))
 	else
-		log "ERROR" "Platform Check: ${CROSSMARK} unsupported platform_arg $arch"
+		log "ERROR" "Platform Check: ${CROSSMARK} unsupported platform $arch"
 		log "INFO" "Join the Tashi Discord to request support for your system."
 		((ERRORS++))
 		return
@@ -250,7 +253,6 @@ check_disk() {
 }
 
 # Docker or Podman Check
-
 check_container_runtime() {
 	if check_command "docker"; then
 		log "INFO" "Container Runtime Check: ${CHECKMARK} Docker is installed"
@@ -306,6 +308,7 @@ check_nat() {
 	if [[ "$OS" == "macos" ]]; then
 		log "WARNING" "NAT Check: ${WARNING} skipped on MacOS."
 		log "WARNING" "$nat_message"
+		return
 	fi
 
 	# Step 2: Get local & public IP
@@ -483,7 +486,7 @@ make_setup_cmd() {
 		cat <<-EOF
 			${sudo:+"$sudo "}${CONTAINER_RT} run --rm -it \\
 				--mount type=volume,src=$AUTH_VOLUME,dst=$AUTH_DIR \\
-				$PULL_FLAG $IMAGE_TAG \\
+				$PULL_FLAG $PLATFORM_ARG $IMAGE_TAG \\
 				interactive-setup $AUTH_DIR
 		EOF
 }
@@ -496,7 +499,6 @@ make_run_cmd() {
 
 	local auto_update_arg=''
 	local restart_arg=''
-	local platform_arg=''
 
 	if [[ $AUTO_UPDATE == "y" ]]; then
 		auto_update_arg="--unstable-update-download-path /tmp/tashi-depin-worker"
@@ -506,15 +508,11 @@ make_run_cmd() {
 		restart_arg="--restart=on-failure"
 	fi
 
-	if [[ "$ARCH" == "arm64" ]]; then
-		platform_arg="--platform linux/amd64"
-	fi
-
 	cat <<-EOF
 		${sudo:+"$sudo "}${CONTAINER_RT} $cmd -p "$AGENT_PORT:$AGENT_PORT" -p 127.0.0.1:9000:9000 \\
 				--mount type=volume,src=$AUTH_VOLUME,dst=$AUTH_DIR \\
 		    --name "$name" -e RUST_LOG="$RUST_LOG" $volumes_from \\
-		    $PULL_FLAG $restart_arg $platform_arg $IMAGE_TAG \\
+		    $PULL_FLAG $restart_arg $PLATFORM_ARG $IMAGE_TAG \\
 				run $AUTH_DIR \\
 				$auto_update_arg \\
 		    ${PUBLIC_IP:+"--agent-public-addr=$PUBLIC_IP:$AGENT_PORT"}
