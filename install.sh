@@ -408,7 +408,7 @@ prompt_auto_updates() {
 	case "$choice" in
 		n | N)
 			log "INFO" "Automatic updates $(make_bold 'disabled'). For manual upgrade instructions, see:\n$MANUAL_UPDATE_LINK"
-		;;
+			;;
 		*)
 			log "INFO" "Automatic updates enabled."
 			AUTO_UPDATE=y
@@ -431,12 +431,12 @@ prompt() {
 
 check_warnings() {
 	if [[ "$ERRORS" -gt 0 ]]; then
-  	log "ERROR" "System does not meet minimum requirements. Exiting."
-  	exit 1
-  elif [[ "$WARNINGS" -eq 0 ]]; then
-  	log "INFO" "System requirements met."
-  	return
-  fi
+		log "ERROR" "System does not meet minimum requirements. Exiting."
+		exit 1
+	elif [[ "$WARNINGS" -eq 0 ]]; then
+		log "INFO" "System requirements met."
+		return
+	fi
 
 	log "WARNING" "System meets minimum but not recommended requirements.\n"
 
@@ -511,11 +511,11 @@ make_run_cmd() {
 	cat <<-EOF
 		${sudo:+"$sudo "}${CONTAINER_RT} $cmd -p "$AGENT_PORT:$AGENT_PORT" -p 127.0.0.1:9000:9000 \\
 				--mount type=volume,src=$AUTH_VOLUME,dst=$AUTH_DIR \\
-		    --name "$name" -e RUST_LOG="$RUST_LOG" $volumes_from \\
-		    $PULL_FLAG $restart_arg $PLATFORM_ARG $IMAGE_TAG \\
+				--name "$name" -e RUST_LOG="$RUST_LOG" $volumes_from \\
+				$PULL_FLAG $restart_arg $PLATFORM_ARG $IMAGE_TAG \\
 				run $AUTH_DIR \\
 				$auto_update_arg \\
-		    ${PUBLIC_IP:+"--agent-public-addr=$PUBLIC_IP:$AGENT_PORT"}
+				${PUBLIC_IP:+"--agent-public-addr=$PUBLIC_IP:$AGENT_PORT"}
 	EOF
 }
 
@@ -644,13 +644,13 @@ post_install() {
 
 		log "INFO" "Worker is running: ${CHECKMARK}"
 
-  	echo ""
+		echo ""
 
-  	local status_cmd="${SUDO_CMD:+"$sudo "}${CONTAINER_RT} ps"
-  	local logs_cmd="${sudo:+"$sudo "}${CONTAINER_RT} logs $CONTAINER_NAME"
+		local status_cmd="${SUDO_CMD:+"$sudo "}${CONTAINER_RT} ps"
+		local logs_cmd="${sudo:+"$sudo "}${CONTAINER_RT} logs $CONTAINER_NAME"
 
-  	log "INFO" "To check the status of your worker: '$status_cmd' (name: $CONTAINER_NAME)"
-  	log "INFO" "To view the logs of your worker: '$logs_cmd'"
+		log "INFO" "To check the status of your worker: '$status_cmd' (name: $CONTAINER_NAME)"
+		log "INFO" "To view the logs of your worker: '$logs_cmd'"
 }
 
 # Detect OS before running checks
