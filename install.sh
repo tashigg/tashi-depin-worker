@@ -655,9 +655,9 @@ display_logo() {
 }
 
 post_install() {
-		echo ""
+	echo ""
 
-		log "INFO" "Worker is running: ${CHECKMARK}"
+	log "INFO" "Worker is running: ${CHECKMARK}"
 
   	echo ""
 
@@ -714,4 +714,3 @@ case "$SUBCOMMAND" in
 esac
 
 post_install
-
