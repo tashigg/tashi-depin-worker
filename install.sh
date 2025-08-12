@@ -282,7 +282,9 @@ check_internet() {
 }
 
 get_local_ip() {
-	if check_command hostname; then
+	if [[ "$OS" == "macos" ]]; then
+		LOCAL_IP=$(ifconfig -l | xargs -n1 ipconfig getifaddr)
+	elif check_command hostname; then
 		LOCAL_IP=$(hostname -I | awk '{print $1}')
 	elif check_command ip; then
 		# Use `ip route` to find what IP address connects to the internet
@@ -301,15 +303,9 @@ check_nat() {
 			earnings may be less than a publicly accessible node.
 
 			For maximum earning potential, ensure UDP port $AGENT_PORT is forwarded to this device.
-			Consult your router's manual or contact your Internet Service Provider for details.
+			Consult your router’s manual or contact your Internet Service Provider for details.
 		EOF
 	);
-
-	if [[ "$OS" == "macos" ]]; then
-		log "WARNING" "NAT Check: ${WARNING} skipped on MacOS."
-		log "WARNING" "$nat_message"
-		return
-	fi
 
 	# Step 2: Get local & public IP
 	get_local_ip
